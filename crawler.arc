@@ -2,6 +2,8 @@
 ; https://api.github.com/repos/svetlyak40wt/dotfiler/commits
 
 ; Получить список репозиториев коммитера
+; https://api.github.com/users/svetlyak40wt/repos
+
 ; Получить список файлов репозитория
 ; https://api.github.com/repos/svetlyak40wt/dotfiler/git/trees/master?recursive=1
 ; Если есть .arc файлы, добавить в список и перейти к шагу 1
@@ -50,6 +52,11 @@
     (if author
         (author 'login))))
 
+
+(def get-repo (item)
+  (item 'full_name))
+
+
 (def commiters (repo)
   (let url (+ "https://api.github.com/repos/" repo "/commits")
     (letf work (url)
@@ -60,6 +67,21 @@
                         next-link (get-next-link (car response))
                         parsed-response (parse-response response))
                  (+ (map get-login
+                         parsed-response)
+                    (work next-link)))))
+          (rem nil (dedup (work url))))))
+
+
+(def repos (user)
+  (let url (+ "https://api.github.com/users/" user "/repos")
+    (letf work (url)
+          (if url
+              (do
+                (pr "Downloading " url #\newline)
+                (withs (response (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token)))
+                        next-link (get-next-link (car response))
+                        parsed-response (parse-response response))
+                 (+ (map get-repo
                          parsed-response)
                     (work next-link)))))
           (rem nil (dedup (work url))))))
