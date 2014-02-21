@@ -57,6 +57,10 @@
   (item 'full_name))
 
 
+(def get-filename (item)
+  (item 'path))
+
+
 (def commiters (repo)
   (let url (+ "https://api.github.com/repos/" repo "/commits")
     (letf work (url)
@@ -85,3 +89,21 @@
                          parsed-response)
                     (work next-link)))))
           (rem nil (dedup (work url))))))
+
+
+(def files (repo)
+  (let url (+ "https://api.github.com/repos/" repo "/git/trees/HEAD?recursive=1")
+    (letf work (url)
+          (if url
+              (do
+                (pr "Downloading " url #\newline)
+                (withs (response (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token)))
+                        next-link (get-next-link (car response))
+                        parsed-response (parse-response response))
+                 (+ (map get-filename
+                         (parsed-response 'tree))
+                    (work next-link)))))
+          (rem nil (dedup (work url))))))
+
+
+https://api.github.com/repos/svetlyak40wt/dotfiler/git/trees/master?recursive=1
