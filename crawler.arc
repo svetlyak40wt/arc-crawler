@@ -41,7 +41,7 @@
 ($ (xdef current-seconds current-seconds))
 
 
-(= *num-requests* 0)
+(= num-requests* 0)
 
 ; parses date in format "2014-01-16T12:56:47Z"
 ; and returns seconds since epoch
@@ -69,7 +69,8 @@
         (> years 0) (+ "" years " year(s)"))))
 
 
-(= oauth-token "f619c243b2fb7492e5da8abb89dfd75cf5812b29")
+(= oauth-token* "f619c243b2fb7492e5da8abb89dfd75cf5812b29")
+
 
 (require "lib/re.arc")
 (require "lib/web.arc")
@@ -78,6 +79,15 @@
   (caar (rem not
         (map [re-match "Link: .*<(.*?)>; rel=\"next\".*" _]
              headers))))
+
+
+; helper to extract X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+(def get-header (headers name)
+  (let regex (+ "^" name ": (.*)$" )
+    (cadar (rem not
+          (map [re-match-pat regex _]
+               headers)))))
+
 
 (def parse-response (response)
   (w/instring f (cadr response) (read-json f)))
@@ -97,21 +107,32 @@
   (obj path (item 'path)
        size (item 'size)))
 
-(= *cache* (table))
-(= *cache-hits* 0)
-(= *cache-misses* 0)
+(= cache* (table))
+(= cache-hits* 0)
+(= cache-misses* 0)
+(= ratelimit-remaining* nil)
+(= ratelimit-reset* 0)
 
 (def gh-get (url)
-  (++ *num-requests*)
-  (let data (*cache* url)
+  (++ num-requests*)
+  (let data (cache* url)
     (if data
         (do
-          (++ *cache-hits*)
+          (++ cache-hits*)
           data)
-        (let data (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token)))
-          (= (*cache* url) data)
-          (++ *cache-misses*)
-          data))))
+        
+        (do
+          (if (and ratelimit-remaining*
+                  (< ratelimit-remaining* (* (len workers*) 4)))
+             (sleep (+ (- (seconds) ratelimit-reset*)
+                       60)))
+          
+          (let data (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token*)))
+            (= (cache* url) data)
+            (= ratelimit-remaining* (coerce (get-header (car data) "X-RateLimit-Remaining") 'int))
+            (= ratelimit-reset* (coerce (get-header (car data) "X-RateLimit-Reset") 'int))
+            (++ cache-misses*)
+            data)))))
 
 
 (mac defget (name url-form process-form)
@@ -120,7 +141,7 @@
        (letf work (url)
              (if url
                  (do
-                   (pr "Downloading " url #\newline)
+                   (prn "Downloading " url)
                    (withs (response (gh-get url)
                                     next-link (get-next-link (car response))
                                     parsed-response (parse-response response))
@@ -171,52 +192,105 @@
 
 (= queue* nil)
 (= workers* nil)
+(= still-working* nil)
+
 
 (def pop-job ()
   (atomic (pop queue*)))
 
-(def push-job (func)
-  (atomic (push func queue*)))
 
-(def run-workers (n)
+(= debug-jobs* nil)
+
+(mac start-job (body)
+  `(if debug-jobs*
+       ,body
+       (atomic (++ queue* (list (fn () ,body))))))
+
+
+(def start-workers (n)
   (for i 1 n
        (push (thread
                (while t
                       (let job (pop-job)
                         (if job
-                            (apply job)
+                            (do (= still-working* #t)
+                                (on-err (fn (err) (prn "Error: " err)) job)
+                                (= still-working nil))
                             (sleep 1)))))
              workers*)))
 
+ 
 (def stop-workers ()
   (each worker workers*
     (kill-thread worker))
   (= workers* nil))
 
-(def main ()
-  (= *num-requests* 0)
-  
-  (with (reps nil
-         start (seconds))
-    (each login (+ (commiters "arclanguage/anarki")
-                   (watchers "arclanguage/anarki"))
-      (each repo (repos login)
-        (if (is-arc-project (files repo))
-            (push repo reps))))
 
-    (if reps
-        (with (scored-reps (sort (compare < cadr)
-                                 (map calculate-score reps))
-               rps (/ *num-requests*
-                      (- (seconds) start)))
-          (pr #\newline "Results:" #\newline "========" #\newline)
-          (each (name score pushed-at stars watchers) scored-reps
-            (pr name
-                ", last push: " (humanize-since pushed-at)
-                ", stars: " stars
-                ", watchers: " watchers
-                #\newline))
-          (pr #\newline "Found reps: " (len scored-reps) #\newline)
-          (pr "Num requests: " *num-requests* #\newline)
-          (pr "RPS: " rps #\newline)
-          scored-reps))))
+(= processed-reps* (table))
+(= processed-logins* (table))
+(= results* nil)
+
+
+(def process-repo (name depth)
+  (when (and (> depth 0)
+             (not (processed-reps* name)))
+    
+    (prn "Processing repo: " name " " depth)
+    (when (is-arc-project (files name))
+      (push name results*))
+    
+    (each login (+ (commiters name)
+                   (watchers name))
+      (start-job (process-login login (- depth 1))))
+    
+    (set (processed-reps* name))))
+
+
+(def process-login (login depth)
+  (when (and (> depth 0)
+             (not (processed-logins* login)))
+    (prn "Processing login: " login " " depth)
+    (each repo (repos login)
+      (start-job (process-repo repo
+                               (- depth 1))))
+    (set (processed-logins* login))))
+
+
+(def main ((o num-workers 10) (o depth 3))
+  (= num-requests* 0)
+  (= processed-reps* (table))
+  (= processed-logins* (table))
+  (= results* nil)
+  (= queue* nil)
+  (= cache-hits* 0)
+  (= cache-misses* 0)
+  (= still-working* nil)
+  
+  (stop-workers)
+  (start-workers num-workers)
+  (start-job (process-repo "arclanguage/anarki" depth))
+
+  (let start (seconds)
+    (while (or (> (len queue*) 0)
+                still-working*)
+           (sleep 1))
+    (prn "GOING TO RESULTS")
+    
+    (when results*
+       (withs (scored-reps (sort (compare < cadr)
+                                (map calculate-score results*))
+              total-time (- (seconds) start)
+              rps (/ num-requests* total-time))
+         (prn #\newline "Results:" #\newline "========")
+         (each (name score pushed-at stars watchers) scored-reps
+           (prn name
+               ", last push: " (humanize-since pushed-at)
+               ", stars: " stars
+               ", watchers: " watchers))
+         (prn #\newline "Found reps: " (len scored-reps))
+         (prn "Total time: " total-time)
+         (prn "Num requests: " num-requests*)
+         (prn "Cache hits: " cache-hits*)
+         (prn "Cache misses: " cache-misses*)
+         (prn "RPS: " rps))
+       nil)))
