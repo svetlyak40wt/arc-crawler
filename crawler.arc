@@ -192,7 +192,7 @@
 
 (= queue* nil)
 (= workers* nil)
-(= still-working* nil)
+(= still-working* 0)
 
 
 (def pop-job ()
@@ -213,9 +213,9 @@
                (while t
                       (let job (pop-job)
                         (if job
-                            (do (= still-working* #t)
+                            (do (++ still-working*)
                                 (on-err (fn (err) (prn "Error: " err)) job)
-                                (= still-working nil))
+                                (-- still-working*))
                             (sleep 1)))))
              workers*)))
 
@@ -257,40 +257,43 @@
 
 
 (def main ((o num-workers 10) (o depth 3))
-  (= num-requests* 0)
-  (= processed-reps* (table))
-  (= processed-logins* (table))
-  (= results* nil)
-  (= queue* nil)
-  (= cache-hits* 0)
-  (= cache-misses* 0)
-  (= still-working* nil)
+  (do
+   (= num-requests* 0)
+   (= processed-reps* (table))
+   (= processed-logins* (table))
+   (= results* nil)
+   (= queue* nil)
+   (= cache-hits* 0)
+   (= cache-misses* 0)
+   (= still-working* 0)
   
-  (stop-workers)
-  (start-workers num-workers)
-  (start-job (process-repo "arclanguage/anarki" depth))
+   (stop-workers)
+   (start-workers num-workers)
+   (start-job (process-repo "arclanguage/anarki" depth))
 
-  (let start (seconds)
-    (while (or (> (len queue*) 0)
-                still-working*)
-           (sleep 1))
-    (prn "GOING TO RESULTS")
+   (let start (seconds)
+     (while (or (> (len queue*) 0)
+                (> still-working* 0))
+            (sleep 1))
+     (prn "GOING TO RESULTS")
     
-    (when results*
+     (if results*
        (withs (scored-reps (sort (compare < cadr)
-                                (map calculate-score results*))
-              total-time (- (seconds) start)
-              rps (/ num-requests* total-time))
+                                 (map calculate-score results*))
+                           total-time (- (seconds) start)
+                           rps (/ num-requests* (max total-time 1)))
          (prn #\newline "Results:" #\newline "========")
          (each (name score pushed-at stars watchers) scored-reps
            (prn name
-               ", last push: " (humanize-since pushed-at)
-               ", stars: " stars
-               ", watchers: " watchers))
+                ", last push: " (humanize-since pushed-at)
+                ", stars: " stars
+                ", watchers: " watchers))
          (prn #\newline "Found reps: " (len scored-reps))
          (prn "Total time: " total-time)
          (prn "Num requests: " num-requests*)
          (prn "Cache hits: " cache-hits*)
          (prn "Cache misses: " cache-misses*)
          (prn "RPS: " rps))
-       nil)))
+       
+       (prn "No results"))
+     nil)))
