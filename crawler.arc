@@ -122,10 +122,11 @@
           data)
         
         (do
-          (if (and ratelimit-remaining*
-                  (< ratelimit-remaining* (* (len workers*) 4)))
-             (sleep (+ (- (seconds) ratelimit-reset*)
-                       60)))
+          (when (and ratelimit-remaining*
+                     (< ratelimit-remaining* (* (len workers*) 4)))
+            (let seconds-to-wait (+ (- (seconds) ratelimit-reset*) 60)
+                 (prn "Damn ratelimit! Will sleep for " seconds-to-wait " seconds")
+                 (sleep seconds-to-wait)))
           
           (let data (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token*)))
             (= (cache* url) data)
@@ -294,6 +295,5 @@
          (prn "Cache hits: " cache-hits*)
          (prn "Cache misses: " cache-misses*)
          (prn "RPS: " rps))
-       
-       (prn "No results"))
+
      nil)))
