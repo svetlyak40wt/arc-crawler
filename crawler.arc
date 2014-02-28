@@ -112,6 +112,7 @@
 (= cache-misses* 0)
 (= ratelimit-remaining* nil)
 (= ratelimit-reset* 0)
+(= http-times* nil)
 
 (def gh-get (url)
   (++ num-requests*)
@@ -124,16 +125,21 @@
         (do
           (when (and ratelimit-remaining*
                      (< ratelimit-remaining* (* (len workers*) 4)))
-            (let seconds-to-wait (+ (- (seconds) ratelimit-reset*) 60)
+            (let seconds-to-wait (+ (- ratelimit-reset* (seconds)) 60)
                  (prn "Damn ratelimit! Will sleep for " seconds-to-wait " seconds")
                  (sleep seconds-to-wait)))
           
-          (let data (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token*)))
-            (= (cache* url) data)
-            (= ratelimit-remaining* (coerce (get-header (car data) "X-RateLimit-Remaining") 'int))
-            (= ratelimit-reset* (coerce (get-header (car data) "X-RateLimit-Reset") 'int))
-            (++ cache-misses*)
-            data)))))
+            (withs (before (msec)
+                    data (mkreq url nil "GET" nil (list (+ "Authorization: token " oauth-token*)))
+                    after (msec))
+                   
+                   (push (- after before) http-times*)
+                   
+                   (= (cache* url) data)
+                   (= ratelimit-remaining* (coerce (get-header (car data) "X-RateLimit-Remaining") 'int))
+                   (= ratelimit-reset* (coerce (get-header (car data) "X-RateLimit-Reset") 'int))
+                   (++ cache-misses*)
+                   data)))))
 
 
 (mac defget (name url-form process-form)
@@ -142,7 +148,7 @@
        (letf work (url)
              (if url
                  (do
-                   (prn "Downloading " url)
+                   ;(prn "Downloading " url)
                    (withs (response (gh-get url)
                                     next-link (get-next-link (car response))
                                     parsed-response (parse-response response))
@@ -193,7 +199,7 @@
 
 (= queue* nil)
 (= workers* nil)
-(= still-working* 0)
+(= still-working* nil)
 
 
 (def pop-job ()
@@ -202,21 +208,22 @@
 
 (= debug-jobs* nil)
 
-(mac start-job (body)
+(mac start-job (name . body)
   `(if debug-jobs*
-       ,body
-       (atomic (++ queue* (list (fn () ,body))))))
+       (do ,@body)
+       ; we put pairs (name, callback) to the queue
+       (atomic (++ queue* (list (list ,name (fn () ,@body)))))))
 
 
 (def start-workers (n)
   (for i 1 n
        (push (thread
                (while t
-                      (let job (pop-job)
+                      (let (name job) (pop-job)
                         (if job
-                            (do (++ still-working*)
+                            (do (push name still-working*)
                                 (on-err (fn (err) (prn "Error: " err)) job)
-                                (-- still-working*))
+                                (pull name still-working*))
                             (sleep 1)))))
              workers*)))
 
@@ -242,7 +249,8 @@
     
     (each login (+ (commiters name)
                    (watchers name))
-      (start-job (process-login login (- depth 1))))
+          (start-job (+ "process-login:" login)
+                     (process-login login (- depth 1))))
     
     (set (processed-reps* name))))
 
@@ -252,8 +260,9 @@
              (not (processed-logins* login)))
     (prn "Processing login: " login " " depth)
     (each repo (repos login)
-      (start-job (process-repo repo
-                               (- depth 1))))
+          (start-job (+ "process-repo:" repo)
+                     (process-repo repo
+                                   (- depth 1))))
     (set (processed-logins* login))))
 
 
@@ -266,16 +275,18 @@
    (= queue* nil)
    (= cache-hits* 0)
    (= cache-misses* 0)
-   (= still-working* 0)
+   (= still-working* nil)
   
    (stop-workers)
    (start-workers num-workers)
-   (start-job (process-repo "arclanguage/anarki" depth))
+   (start-job "process-root-repo" (process-repo "arclanguage/anarki" depth))
 
    (let start (seconds)
      (while (or (> (len queue*) 0)
-                (> still-working* 0))
-            (sleep 1))
+                (> (len still-working*) 0))
+       (prn (len still-working*) " jobs currently processes by workers:")
+       (prn:string:intersperse ", " still-working*)
+       (sleep 1))
      (prn "GOING TO RESULTS")
     
      (if results*
@@ -296,4 +307,4 @@
          (prn "Cache misses: " cache-misses*)
          (prn "RPS: " rps))
 
-     nil)))
+       nil))))
