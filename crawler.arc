@@ -276,6 +276,7 @@
    (= cache-hits* 0)
    (= cache-misses* 0)
    (= still-working* nil)
+   (= http-times* nil)
   
    (stop-workers)
    (start-workers num-workers)
@@ -305,6 +306,7 @@
          (prn "Num requests: " num-requests*)
          (prn "Cache hits: " cache-hits*)
          (prn "Cache misses: " cache-misses*)
-         (prn "RPS: " rps))
+         (prn "RPS: " rps)
+         (prn "Avg HTTP response time: " (real (/ (apply + http-times*) (len http-times*)))))
 
        nil))))
